@@ -1,3 +1,24 @@
+{
+  "job_name": "job_name_here",
+  "success": true,
+  "status": "job_status",
+  "last_run": {
+    "id": 12345,
+    "status": "run_status",
+    "start_time": "start_time_string",
+    "end_time": "end_time_string"
+  },
+  "logs": {
+    "stdout": "stdout_content_here",
+    "stderr": "stderr_content_here"
+  }
+}
+
+
+
+
+
+
 # Basic usage (uses environment settings if available)
 python autosys_logs.py my_job_name
 
