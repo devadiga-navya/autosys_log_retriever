@@ -1,0 +1,297 @@
+#Requires -Version 3.0
+<#
+.SYNOPSIS
+    Retrieves stdout and stderr logs for Autosys jobs with authentication.
+
+.DESCRIPTION
+    This script retrieves stdout and stderr logs for a specified Autosys job's most recent run.
+    It uses explicit authentication parameters rather than relying on pre-configured environments.
+
+.PARAMETER JobName
+    Name of the Autosys job.
+
+.PARAMETER Username
+    Autosys username.
+
+.PARAMETER Password
+    Autosys password. If username is provided without password, script will prompt securely.
+
+.PARAMETER Instance
+    Autosys instance name.
+
+.PARAMETER Server
+    Autosys server (optional).
+
+.EXAMPLE
+    .\AutosysLogRetriever.ps1 -JobName my_job_name
+
+.EXAMPLE
+    .\AutosysLogRetriever.ps1 -JobName my_job_name -Username user1 -Instance ACE
+
+.NOTES
+    Author: Claude
+    Date: April 9, 2025
+#>
+
+[CmdletBinding()]
+param (
+    [Parameter(Mandatory=$true, Position=0, ValueFromPipeline=$true, ValueFromPipelineByPropertyName=$true)]
+    [Alias("j", "Job")]
+    [string]$JobName,
+    
+    [Parameter(Mandatory=$false)]
+    [Alias("u", "User")]
+    [string]$Username,
+    
+    [Parameter(Mandatory=$false)]
+    [Alias("p", "Pass")]
+    [string]$Password,
+    
+    [Parameter(Mandatory=$false)]
+    [Alias("i")]
+    [string]$Instance,
+    
+    [Parameter(Mandatory=$false)]
+    [Alias("s")]
+    [string]$Server
+)
+
+# Print banner
+function Show-Banner {
+    Write-Host
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host "      AUTOSYS LOG RETRIEVER          " -ForegroundColor Cyan
+    Write-Host "=====================================" -ForegroundColor Cyan
+    Write-Host
+}
+
+# Get job details using autorep command
+function Get-JobDetails {
+    param (
+        [string]$JobName,
+        [string]$Username,
+        [string]$Password,
+        [string]$Instance,
+        [string]$Server
+    )
+    
+    # Build the command with authentication if provided
+    $cmd = "autorep -j `"$JobName`" -L"
+    
+    if ($Username) {
+        $cmd += " -u `"$Username`""
+    }
+    
+    if ($Password) {
+        $cmd += " -p `"$Password`""
+    }
+    
+    if ($Instance) {
+        $cmd += " -i `"$Instance`""
+    }
+    
+    if ($Server) {
+        $cmd += " -s `"$Server`""
+    }
+    
+    # Run the command and capture output
+    try {
+        $output = Invoke-Expression $cmd 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $errorMsg = $output | Out-String
+            Write-Error "Error running autorep command. Exit code: $LASTEXITCODE`nError output: $errorMsg"
+            return $null
+        }
+        
+        # Convert output to string if it's not already
+        $outputStr = $output | Out-String
+        
+        # Parse output to extract job details using regex
+        $status = [regex]::Match($outputStr, "Status/Event:\s+(\w+)").Groups[1].Value
+        $lastRun = [regex]::Match($outputStr, "Last Run:\s+([\d/]+\s+[\d:]+)").Groups[1].Value
+        $stdOutFile = [regex]::Match($outputStr, "std_out_file:\s*(.*?)(?:\s+|$)").Groups[1].Value.Trim()
+        $stdErrFile = [regex]::Match($outputStr, "std_err_file:\s*(.*?)(?:\s+|$)").Groups[1].Value.Trim()
+        
+        # If stdout/stderr files not found, try to construct paths based on job directory
+        if (-not $stdOutFile -or -not $stdErrFile) {
+            $jobDir = [regex]::Match($outputStr, "job_dir:\s*(.*?)(?:\s+|$)").Groups[1].Value.Trim()
+            
+            if ($jobDir) {
+                if (-not $stdOutFile) {
+                    $stdOutFile = Join-Path -Path $jobDir -ChildPath "$JobName.out"
+                }
+                
+                if (-not $stdErrFile) {
+                    $stdErrFile = Join-Path -Path $jobDir -ChildPath "$JobName.err"
+                }
+            }
+        }
+        
+        # Create and return job details hashtable
+        $jobDetails = @{
+            JobName = $JobName
+            Status = $status
+            LastRun = $lastRun
+            StdOutFile = $stdOutFile
+            StdErrFile = $stdErrFile
+        }
+        
+        return $jobDetails
+    }
+    catch {
+        Write-Error "Exception occurred while getting job details: $_"
+        return $null
+    }
+}
+
+# Display job logs
+function Show-JobLogs {
+    param (
+        [hashtable]$JobDetails,
+        [string]$Username,
+        [string]$Password,
+        [string]$Instance,
+        [string]$Server
+    )
+    
+    # Print job information header
+    Write-Host
+    Write-Host "================================================================================" -ForegroundColor Green
+    Write-Host "Job Name: $($JobDetails.JobName)" -ForegroundColor White
+    Write-Host "Status: $(if($JobDetails.Status){"$($JobDetails.Status)"}else{"Unknown"})" -ForegroundColor White
+    Write-Host "Last Run: $(if($JobDetails.LastRun){"$($JobDetails.LastRun)"}else{"Unknown"})" -ForegroundColor White
+    Write-Host "================================================================================" -ForegroundColor Green
+    Write-Host
+    
+    # Handle stdout file
+    if ($JobDetails.StdOutFile) {
+        Write-Host
+        Write-Host "STDOUT LOG ($($JobDetails.StdOutFile)):" -ForegroundColor Yellow
+        Write-Host "--------------------------------------------------------------------------------" -ForegroundColor Yellow
+        
+        # Try to read the file directly
+        if (Test-Path -Path $JobDetails.StdOutFile -PathType Leaf) {
+            Get-Content -Path $JobDetails.StdOutFile -Raw
+        }
+        else {
+            # If direct access fails, try to retrieve via Autosys utilities
+            Write-Host "Direct access to stdout file failed. Attempting to retrieve via Autosys utilities..." -ForegroundColor Magenta
+            Get-LogViaAutosys -JobName $JobDetails.JobName -LogType "stdout" -Username $Username -Password $Password -Instance $Instance -Server $Server
+        }
+    }
+    else {
+        Write-Host
+        Write-Host "STDOUT LOG: Not available" -ForegroundColor Yellow
+    }
+    
+    # Handle stderr file
+    if ($JobDetails.StdErrFile) {
+        Write-Host
+        Write-Host "STDERR LOG ($($JobDetails.StdErrFile)):" -ForegroundColor Yellow
+        Write-Host "--------------------------------------------------------------------------------" -ForegroundColor Yellow
+        
+        # Try to read the file directly
+        if (Test-Path -Path $JobDetails.StdErrFile -PathType Leaf) {
+            Get-Content -Path $JobDetails.StdErrFile -Raw
+        }
+        else {
+            # If direct access fails, try to retrieve via Autosys utilities
+            Write-Host "Direct access to stderr file failed. Attempting to retrieve via Autosys utilities..." -ForegroundColor Magenta
+            Get-LogViaAutosys -JobName $JobDetails.JobName -LogType "stderr" -Username $Username -Password $Password -Instance $Instance -Server $Server
+        }
+    }
+    else {
+        Write-Host
+        Write-Host "STDERR LOG: Not available" -ForegroundColor Yellow
+    }
+}
+
+# Retrieve logs using Autosys utilities
+function Get-LogViaAutosys {
+    param (
+        [string]$JobName,
+        [string]$LogType,
+        [string]$Username,
+        [string]$Password,
+        [string]$Instance,
+        [string]$Server
+    )
+    
+    # Set log option based on type
+    $logOption = if ($LogType -eq "stdout") { "-o" } else { "-e" }
+    
+    # Build command with authentication if provided
+    $cmd = "autosyslog -j `"$JobName`" $logOption"
+    
+    if ($Username) {
+        $cmd += " -u `"$Username`""
+    }
+    
+    if ($Password) {
+        $cmd += " -p `"$Password`""
+    }
+    
+    if ($Instance) {
+        $cmd += " -i `"$Instance`""
+    }
+    
+    if ($Server) {
+        $cmd += " -s `"$Server`""
+    }
+    
+    # Run the command
+    try {
+        Invoke-Expression $cmd 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Error retrieving logs via autosyslog. Exit code: $LASTEXITCODE"
+            return $false
+        }
+        
+        return $true
+    }
+    catch {
+        Write-Error "Exception occurred while retrieving logs: $_"
+        return $false
+    }
+}
+
+# Main script execution
+function Main {
+    # If username is provided but password isn't, prompt for password
+    if ($Username -and -not $Password) {
+        $securePassword = Read-Host "Enter password for $Username" -AsSecureString
+        $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
+        )
+    }
+    
+    # If username and password are provided but instance isn't, prompt for instance
+    if ($Username -and $Password -and -not $Instance) {
+        $Instance = Read-Host "Enter Autosys instance name"
+    }
+    
+    # Print banner
+    Show-Banner
+    Write-Host "Retrieving logs for Autosys job: $JobName" -ForegroundColor Cyan
+    
+    # Get job details and display logs
+    $jobDetails = Get-JobDetails -JobName $JobName -Username $Username -Password $Password -Instance $Instance -Server $Server
+    
+    if ($jobDetails) {
+        Show-JobLogs -JobDetails $jobDetails -Username $Username -Password $Password -Instance $Instance -Server $Server
+        return 0
+    }
+    else {
+        Write-Error "Failed to retrieve job details for $JobName"
+        return 1
+    }
+}
+
+# Call main function
+try {
+    Main
+}
+catch {
+    Write-Error "An unexpected error occurred: $_"
+    exit 1
+}
