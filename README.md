@@ -1,3 +1,8 @@
+python minimal_autosys_logs.py --job daily_backup
+python minimal_autosys_logs.py --job weekly_report --run 42 --pretty
+
+
+
 {
   "job_name": "job_name_here",
   "success": true,
